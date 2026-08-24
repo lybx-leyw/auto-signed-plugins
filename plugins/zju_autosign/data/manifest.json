@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "2.0",
+  "type": "data-source",
+  "runtime": "python",
+  "script": "autosign.py",
+  "dataTypes": [
+    {
+      "name": "zju_autosign",
+      "typeArg": "zju_autosign",
+      "ttl": "0s",
+      "category": "zju_autosign",
+      "displayName": "学在浙大自动签到状态",
+      "fields": []
+    }
+  ]
+}
