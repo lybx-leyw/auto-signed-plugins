@@ -121,7 +121,33 @@ Compress-Archive -Path plugins/zju_autosign -DestinationPath zju_autosign.plugin
 
 ---
 
-## 六、许可
+## 六、平台支持
+
+| 平台 | 状态 | 说明 |
+|------|------|------|
+| **Windows / macOS / Linux（桌面）** | ✅ 已实现，验证于 Windows | worker 经 `platform.process.start` 走 stdio 常驻终端，双向 stdin 命令（status/checkin/stop）正常 |
+| **Android** | ⚠️ **未实验，不承诺有效** | 见下方说明 |
+
+> ⚠️ **重要**：本插件**只在桌面端（Windows）验证过**。**Android 尚未经过任何真机/模拟器
+> 实验，无法承诺可用**。原因如下（静态自查结论，非实测）：
+
+1. **常驻进程的 stdin 双向交互在 Android 不受支持**——本插件 worker 是 `scope=long,
+   protocol=stdio` 的常驻终端，依赖「页面经 `platform.process.write` 向 worker stdin
+   发命令（`checkin`/`status`）」。而 Evergreen 的 Android 进程内 Python 桥
+   （Chaquopy，`ChaquopyLongProcess`）**不支持运行中写 stdin**（`stdin` 直接抛
+   `UnsupportedError`），命令无法送达 worker，签到/查询会静默失效。
+2. **worker 的 stdin 命令循环在 Android 无法持续**——`runScript` 的 stdin 是一次性
+   `StringIO`，`for line in sys.stdin` 会立即 EOF 使 worker 退出。
+3. **TLS/证书兼容性未验证**——`autosign_core.py` 针对 ZJU 旧式 TLS（小 DH 参数）做了
+   `set_ciphers("DEFAULT:@SECLEVEL=0")` 降级，该行为在 Android CPython（Chaquopy）下
+   未验证。
+
+若后续需要 Android 支持，需先解决平台侧的「常驻进程 stdin 双向流」能力（当前缺失），
+再行实测。在此之前，**请勿在 Android 上依赖本插件**。
+
+---
+
+## 七、许可
 
 MIT。代码参考自 [ZJU-live-better](https://github.com/cubicYYY/ZJU-live-better)
 （GPL-3.0，本项目为独立重实现，仅借鉴接口协议与坐标数据）。
