@@ -17,28 +17,23 @@
 plugins/zju_autosign/
 ├── module/
 │   ├── manifest.json      # module 声明（HTML 仪表盘 + 长驻 worker 进程）
-│   ├── index.html         # 仪表盘页（platform bridge：状态/开关/立即签到/地点切换）
-│   ├── worker.py          # 长驻监控进程（module.process，scope=long，随 Evergreen 启动）
-│   └── autosign_core.py   # 共享核心：CAS 登录 / 雷达+数字点名 / 钉钉 / 状态文件
-├── data/
-│   ├── manifest.json      # data-source 声明（zju_autosign，ttl=0s）
-│   └── autosign.py        # 状态适配壳（优先回显 worker 状态，兜底单次即时检查）
+│   ├── index.html         # 仪表盘页（platform.process：启动/状态/立即签到/地点切换）
+│   ├── worker.py          # 长驻监控进程（module.process，scope=long, protocol=stdio）
+│   └── autosign_core.py   # 核心：CAS 登录 / 雷达+数字点名 / 钉钉 / 状态持久化
 └── config/
     └── config.json        # 新增设置项声明（AUTOSIGN_*）
 ```
 
-**双通道设计**：
+**架构**：本插件是**纯 module + 后端进程**形态（**不是** data-source）：
 
-| 通道 | 机制 | 何时生效 |
+| 角色 | 机制 | 何时生效 |
 |---|---|---|
 | worker 常驻监控 | `module.process`（scope=long, protocol=stdio）+ 模块页 `platform.process.start('autosign-worker')` 主动拉起，后台线程按轮询间隔检查并应答，状态经 stdout 逐行（`process:output` 事件）实时推送 | 打开模块页后（页面主动拉起 worker，无需 Evergreen 全局进程管理） |
-| 数据源兜底 | `data-source`（ttl=0s）+ `platform.data.refresh`；worker 未运行时数据源自行执行一轮即时检查 | worker 未启动 / 启动失败时；「立即签到」按钮 |
-
-两通道通过「已应答点名自动跳过」（服务端状态 `on_call_fine`）互不冲突。
 
 > **架构说明**：Evergreen 的 HTML 模板（`template:"html"`）不会自动启动 `module.process`，
 > 常驻进程须由页面经 `platform.process.start` 主动拉起（stdio 双向流）。这是本插件
-> worker 采用 `protocol:"stdio"` 而非 `http` 的原因。
+> worker 采用 `protocol:"stdio"` 而非 `http` 的原因；也因此**不注册 data-source**
+> （签到是持续监控动作，不是「按需取数」的数据源语义）。
 
 ---
 
@@ -109,12 +104,12 @@ Compress-Archive -Path plugins/zju_autosign -DestinationPath zju_autosign.plugin
 ## 五、上架清单（自检）
 
 - [x] module：`module/manifest.json` 含 `type`/`id`/`name` + `schemaVersion: "2.0"`
-- [x] data-source：`data/manifest.json` + 适配壳 `data/autosign.py`（CLI 契约：`--type --project-root --greenix-config`）
+- [x] 后端进程：`module/worker.py`（scope=long, protocol=stdio，由页面 `platform.process.start` 拉起）
 - [x] 新增设置项：`config/config.json` 声明（key 带 `AUTOSIGN_` 前缀，全局唯一）
 - [x] 凭证：全部走 `_get_config` 三级降级（文件 → ConfigHttpServer → 环境变量），零硬编码
-- [x] stdout 契约：worker 逐行输出状态/事件 JSON（stdio 常驻终端）；数据源只输出纯 JSON；日志全走 stderr
+- [x] stdout 契约：worker 逐行输出状态/事件 JSON（stdio 常驻终端）；日志全走 stderr
 - [x] 失败收敛：任何异常输出 `{"error": "..."}`，进程不崩、不吐堆栈到 stdout
-- [x] 依赖：**纯 Python 标准库**（urllib/http.server/ThreadPoolExecutor），无需 `requirements`
+- [x] 依赖：**纯 Python 标准库**（urllib/threading/ThreadPoolExecutor），无需 `requirements`
 - [x] registry：`registry-entry.example.json`（manifest.source=github，path 指向资源目录 `plugins/zju_autosign`）
 
 ### 已知边界

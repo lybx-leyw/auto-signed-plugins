@@ -223,12 +223,12 @@ select:focus { outline: 2px solid var(--evg-accent-border, var(--accent)); }
 
 </main>
 
-<footer class="footer">Powered by Evergreen · 数据源 zju_autosign · worker 常驻监控</footer>
+<footer class="footer">Powered by Evergreen · 学在浙大自动签到 · worker 常驻监控</footer>
 
 <script>
 (function () {
   'use strict';
-  var DS = 'zju_autosign';
+  var WORKER = 'autosign-worker';
   var LOCATIONS = {
     ZJGD1: '紫金港 · 东一教学楼', ZJGX1: '紫金港 · 西教学楼', ZJGB1: '紫金港 · 段永平教学楼',
     ZJG4: '紫金港 · 大西区', YQ4: '玉泉 · 教四', YQ1: '玉泉 · 教一', YQ7: '玉泉 · 教七',
@@ -274,7 +274,7 @@ select:focus { outline: 2px solid var(--evg-accent-border, var(--accent)); }
     } else {
       setPill('st-off', '未运行');
       $('hero-title').textContent = '后台监控进程未运行';
-      $('hero-sub').textContent = '页面仍可执行单次签到（数据源兜底）';
+      $('hero-sub').textContent = '点击「立即签到」拉起 worker 并执行一轮检查';
       $('error-box').style.display = 'none';
     }
 
@@ -330,13 +330,13 @@ select:focus { outline: 2px solid var(--evg-accent-border, var(--accent)); }
     }).join('');
   }
 
-  function showLoadError(e) {
+  function showWorkerError(e) {
     setPill('st-error', '不可用');
-    $('hero-title').textContent = '数据源未就绪';
-    $('hero-sub').textContent = '无法连接 zju_autosign 数据源';
+    $('hero-title').textContent = '后台 worker 未就绪';
+    $('hero-sub').textContent = '无法启动常驻监控进程';
     $('error-box').style.display = 'block';
-    $('error-box').textContent = '加载失败：' + esc(e && e.message ? e.message : String(e)) +
-      '。请确认插件已安装到 plugins/ 目录且 Evergreen 已重启。';
+    $('error-box').textContent = '错误：' + esc(e && e.message ? e.message : String(e)) +
+      '。请确认插件已安装到 plugins/ 目录、Python 可用，并已重启 Evergreen。';
   }
 
   function buildHint() {
@@ -344,7 +344,7 @@ select:focus { outline: 2px solid var(--evg-accent-border, var(--accent)); }
       '1. 在 <b>设置</b> 面板配置内置项：<code>ZJU_USERNAME</code>（学号）与 <code>ZJU_PASSWORD</code>（统一认证密码）——凭证只存本地，脚本通过三级降级读取，绝不硬编码。<br>' +
       '2. 可选：配置 <code>DINGTALK_WEBHOOK</code>（+ <code>DINGTALK_SECRET</code> 加签），签到成功/失败实时推送钉钉。<br>' +
       '3. 插件设置项：<code>AUTOSIGN_RADAR_LOCATION</code>（雷达地点，默认紫金港东一）、<code>AUTOSIGN_POLL_INTERVAL</code>（轮询间隔）、<code>AUTOSIGN_ENABLED</code>（总开关）。<br>' +
-      '4. 后台监控进程随 Evergreen 启动（worker 常驻，崩溃自动重启）；本页面每 5 秒拉取一次实时状态，「立即签到」可随时触发一轮即时检查。';
+      '4. 打开本页即自动拉起后台监控进程（worker 常驻 stdio 后端）；状态实时推送到页面，「立即签到」可随时触发一轮即时检查。';
   }
 
   function handleWorkerLine(payload) {
@@ -360,37 +360,27 @@ select:focus { outline: 2px solid var(--evg-accent-border, var(--accent)); }
     } else if (msg.type === 'event') {
       // 签到事件：追加到历史，并刷新状态
       render({ data: msg.data });
-      platform.process.write('autosign-worker', 'status\n').catch(function () {});
+      platform.process.write(WORKER, 'status\n').catch(function () {});
     } else if (msg.type === 'notice') {
       $('hero-sub').textContent = String(msg.data || '');
     }
   }
 
   function startWorker() {
-    // 主动拉起常驻 worker（stdio）。启动失败则回退数据源兜底。
+    // 主动拉起常驻 worker（stdio 后端进程）。
     if (!platform.process || !platform.process.start) {
-      // 平台无 process 能力：回退数据源兜底
-      fallbackToDataSource();
+      showWorkerError({ message: '当前 Evergreen 版本不支持常驻进程（platform.process）' });
       return;
     }
-    platform.process.start('autosign-worker', {}).then(function () {
+    platform.process.start(WORKER, {}).then(function () {
       setPill('st-running', '运行中');
       $('hero-sub').textContent = '后台监控进程已启动';
       $('btn-checkin').disabled = false;
       // 主动查询一次状态
-      platform.process.write('autosign-worker', 'status\n').catch(function () {});
+      platform.process.write(WORKER, 'status\n').catch(function () {});
     }).catch(function (e) {
-      // 启动失败：回退数据源兜底
-      fallbackToDataSource();
+      showWorkerError(e);
     });
-  }
-
-  function fallbackToDataSource() {
-    setPill('st-off', '未运行');
-    $('hero-title').textContent = '后台监控进程未运行（回退数据源兜底）';
-    $('hero-sub').textContent = '页面仍可执行单次签到';
-    $('btn-checkin').disabled = false;
-    platform.data.get(DS).then(render).catch(showLoadError);
   }
 
   function init() {
@@ -404,7 +394,7 @@ select:focus { outline: 2px solid var(--evg-accent-border, var(--accent)); }
       platform.process.onExit(function (payload) {
         setPill('st-off', '已退出');
         $('hero-title').textContent = '后台监控进程已退出';
-        $('hero-sub').textContent = '可点击「立即签到」走数据源兜底，或重开页面重启 worker';
+        $('hero-sub').textContent = '重开本页可重新拉起 worker';
       });
     }
 
@@ -412,19 +402,15 @@ select:focus { outline: 2px solid var(--evg-accent-border, var(--accent)); }
 
     $('btn-checkin').addEventListener('click', function () {
       $('btn-checkin').disabled = true;
-      // 优先通知 worker 立即检查；无 worker 时回退数据源 refresh。
-      var viaWorker = platform.process && platform.process.write
-        ? platform.process.write('autosign-worker', 'checkin\n')
-            .then(function () { return null; })
-            .catch(function () { return platform.data.refresh(DS); })
-        : platform.data.refresh(DS);
-      viaWorker.then(function (d) {
-        if (d) render({ data: d });
-        setTimeout(function () { $('btn-checkin').disabled = false; }, 600);
-      }).catch(function (e) {
-        $('btn-checkin').disabled = false;
-        showLoadError(e);
-      });
+      // 通知 worker 立即执行一轮检查（worker 经 process:output 回报结果）。
+      platform.process.write(WORKER, 'checkin\n')
+        .then(function () {
+          setTimeout(function () { $('btn-checkin').disabled = false; }, 600);
+        })
+        .catch(function (e) {
+          $('btn-checkin').disabled = false;
+          showWorkerError(e);
+        });
     });
 
     $('btn-toggle').addEventListener('click', function () {
@@ -435,25 +421,20 @@ select:focus { outline: 2px solid var(--evg-accent-border, var(--accent)); }
         return platform.settings.set('AUTOSIGN_ENABLED', next);
       }).then(function () {
         // 切开关后让 worker 立即读新配置并回报状态
-        return platform.process && platform.process.write
-          ? platform.process.write('autosign-worker', 'status\n').catch(function () {})
-          : platform.data.refresh(DS);
-      }).then(function (d) {
-        if (d && typeof d === 'object' && !d.ok) render({ data: d });
+        return platform.process.write(WORKER, 'status\n').catch(function () {});
+      }).then(function () {
         btn.disabled = false;
       }).catch(function (e) {
         btn.disabled = false;
-        showLoadError(e);
+        showWorkerError(e);
       });
     });
 
     $('loc-select').addEventListener('change', function () {
       var sel = this;
       platform.settings.set('AUTOSIGN_RADAR_LOCATION', sel.value).then(function () {
-        if (platform.process && platform.process.write) {
-          platform.process.write('autosign-worker', 'status\n').catch(function () {});
-        }
-      }).catch(function (e) { showLoadError(e); });
+        platform.process.write(WORKER, 'status\n').catch(function () {});
+      }).catch(function (e) { showWorkerError(e); });
     });
   }
 
