@@ -31,11 +31,14 @@ plugins/zju_autosign/
 
 | 通道 | 机制 | 何时生效 |
 |---|---|---|
-| worker 常驻监控 | `module.process`（scope=long, autoStart, autoRestart）随 Evergreen 启动，后台线程按轮询间隔检查并应答 | Evergreen 运行期间（无需打开模块页） |
-| 页面/数据源兜底 | `data-source`（ttl=0s）+ 模块页 `platform.data.subscribe` 5s 轮询；状态过期时数据源自行执行一轮即时检查 | 打开模块页时；「立即签到」按钮 |
+| worker 常驻监控 | `module.process`（scope=long, protocol=stdio）+ 模块页 `platform.process.start('autosign-worker')` 主动拉起，后台线程按轮询间隔检查并应答，状态经 stdout 逐行（`process:output` 事件）实时推送 | 打开模块页后（页面主动拉起 worker，无需 Evergreen 全局进程管理） |
+| 数据源兜底 | `data-source`（ttl=0s）+ `platform.data.refresh`；worker 未运行时数据源自行执行一轮即时检查 | worker 未启动 / 启动失败时；「立即签到」按钮 |
 
-两通道共用 `module/state.json`，互不冲突（同一点名已被应答后状态变为
-`on_call_fine`，另一通道会自动跳过）。
+两通道通过「已应答点名自动跳过」（服务端状态 `on_call_fine`）互不冲突。
+
+> **架构说明**：Evergreen 的 HTML 模板（`template:"html"`）不会自动启动 `module.process`，
+> 常驻进程须由页面经 `platform.process.start` 主动拉起（stdio 双向流）。这是本插件
+> worker 采用 `protocol:"stdio"` 而非 `http` 的原因。
 
 ---
 
@@ -43,9 +46,9 @@ plugins/zju_autosign/
 
 1. 将整个 `plugins/zju_autosign` 目录复制到 Evergreen 的插件目录 `plugins/` 下
    （或用市场安装 `.plugin` 包——见「打包」）。
-2. **重启 Evergreen**。启动时 `ModuleLoader` 会自动拉起 worker
-   （要求 Python 可用；平台内嵌 Python 即可，本插件零第三方依赖）。
-3. 打开侧边栏「校园 → 学在浙大自动签到」。
+2. **重启 Evergreen**（要求 Python 可用；平台内嵌 Python 即可，本插件零第三方依赖）。
+3. 打开侧边栏「校园 → 学在浙大自动签到」——模块页会经 `platform.process.start`
+   自动拉起常驻 worker（stdio 常驻终端）。
 
 > 平台要求：Evergreen v2.0（市场为本地扫描，manifest 带 `schemaVersion: "2.0"`）。
 
@@ -82,17 +85,19 @@ Compress-Archive -Path plugins/zju_autosign -DestinationPath zju_autosign.plugin
 ## 四、工作流程
 
 ```
-Evergreen 启动 → ModuleLoader 拉起 worker.py
-   ├─ stdout 输出 PORT:<port> → GET /health 通过 → 标记就绪
-   └─ 后台监控线程：
+打开模块页（index.html）
+   ├─ platform.process.start('autosign-worker') → 拉起 worker.py（stdio 常驻）
+   ├─ platform.onOutput → 接收 worker stdout 逐行 JSON（state/event/notice）
+   └─ worker 后台监控线程：
        读配置（三级降级）→ 登录 CAS → 循环：
          GET /api/radar/rollcalls
          ├─ 雷达点名 → 配置地点 → 12 个已知点位 → 球面三点定位
          ├─ 数字点名 → 读现成码 → 0000-9999 并发穷举
-         └─ 结果写入 state.json + 推送钉钉
-模块页（index.html）：
-   platform.data.subscribe('zju_autosign') → 5s 拉取实时状态
-   「立即签到」→ platform.data.refresh('zju_autosign') → 兜底即时检查
+         └─ 结果经 stdout 逐行推送 + 推送钉钉
+模块页交互：
+   「立即签到」→ platform.process.write('autosign-worker', 'checkin\n')
+   「暂停/恢复」→ platform.settings.set('AUTOSIGN_ENABLED', ...) → worker 每轮重读
+   切换地点 → platform.settings.set('AUTOSIGN_RADAR_LOCATION', ...)
 ```
 
 **已实现的能力**（对照 autosign.js）：✅ 雷达点名（配置地点优先） ✅ 雷达点位遍历
@@ -107,10 +112,10 @@ Evergreen 启动 → ModuleLoader 拉起 worker.py
 - [x] data-source：`data/manifest.json` + 适配壳 `data/autosign.py`（CLI 契约：`--type --project-root --greenix-config`）
 - [x] 新增设置项：`config/config.json` 声明（key 带 `AUTOSIGN_` 前缀，全局唯一）
 - [x] 凭证：全部走 `_get_config` 三级降级（文件 → ConfigHttpServer → 环境变量），零硬编码
-- [x] stdout 契约：worker 只输出 `PORT:` 行；数据源只输出纯 JSON；日志全走 stderr
+- [x] stdout 契约：worker 逐行输出状态/事件 JSON（stdio 常驻终端）；数据源只输出纯 JSON；日志全走 stderr
 - [x] 失败收敛：任何异常输出 `{"error": "..."}`，进程不崩、不吐堆栈到 stdout
-- [x] 依赖：**纯 Python 标准库**（urllib/http.server/Decimal/ThreadPoolExecutor），无需 `requirements`
-- [x] registry：`registry-entry.example.json`（v1 协议参考；v2.0 本地市场无需 registry 条目）
+- [x] 依赖：**纯 Python 标准库**（urllib/http.server/ThreadPoolExecutor），无需 `requirements`
+- [x] registry：`registry-entry.example.json`（manifest.source=github，path 指向资源目录 `plugins/zju_autosign`）
 
 ### 已知边界
 

@@ -19,6 +19,6 @@
   "manifest": {
     "source": "github",
     "repo": "lybx-leyw/auto-signed-plugins",
-    "path": "plugins/zju_autosign/module/manifest.json"
+    "path": "plugins/zju_autosign"
   }
 }

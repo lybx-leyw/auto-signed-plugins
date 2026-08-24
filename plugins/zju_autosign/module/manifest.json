@@ -20,10 +20,10 @@
       "id": "autosign-worker",
       "exe": "worker.py",
       "runtime": "python",
-      "protocol": "http",
+      "protocol": "stdio",
       "scope": "long",
-      "autoStart": true,
-      "autoRestart": true,
+      "autoStart": false,
+      "autoRestart": false,
       "preferredPort": 0
     }
   ]

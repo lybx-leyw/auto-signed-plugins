@@ -347,17 +347,80 @@ select:focus { outline: 2px solid var(--evg-accent-border, var(--accent)); }
       '4. 后台监控进程随 Evergreen 启动（worker 常驻，崩溃自动重启）；本页面每 5 秒拉取一次实时状态，「立即签到」可随时触发一轮即时检查。';
   }
 
+  function handleWorkerLine(payload) {
+    // process:output 事件：每行是一条 JSON（state/event/notice）。
+    if (!payload || !payload.line) return;
+    var line = String(payload.line);
+    var msg;
+    try { msg = JSON.parse(line); } catch (e) { return; }
+    if (!msg || typeof msg !== 'object') return;
+
+    if (msg.type === 'state') {
+      render({ data: msg.data });
+    } else if (msg.type === 'event') {
+      // 签到事件：追加到历史，并刷新状态
+      render({ data: msg.data });
+      platform.process.write('autosign-worker', 'status\n').catch(function () {});
+    } else if (msg.type === 'notice') {
+      $('hero-sub').textContent = String(msg.data || '');
+    }
+  }
+
+  function startWorker() {
+    // 主动拉起常驻 worker（stdio）。启动失败则回退数据源兜底。
+    if (!platform.process || !platform.process.start) {
+      // 平台无 process 能力：回退数据源兜底
+      fallbackToDataSource();
+      return;
+    }
+    platform.process.start('autosign-worker', {}).then(function () {
+      setPill('st-running', '运行中');
+      $('hero-sub').textContent = '后台监控进程已启动';
+      $('btn-checkin').disabled = false;
+      // 主动查询一次状态
+      platform.process.write('autosign-worker', 'status\n').catch(function () {});
+    }).catch(function (e) {
+      // 启动失败：回退数据源兜底
+      fallbackToDataSource();
+    });
+  }
+
+  function fallbackToDataSource() {
+    setPill('st-off', '未运行');
+    $('hero-title').textContent = '后台监控进程未运行（回退数据源兜底）';
+    $('hero-sub').textContent = '页面仍可执行单次签到';
+    $('btn-checkin').disabled = false;
+    platform.data.get(DS).then(render).catch(showLoadError);
+  }
+
   function init() {
     buildHint();
-    platform.data.get(DS).then(render).catch(showLoadError);
-    // 平台侧 5s 轮询订阅：状态变化自动推送
-    try { platform.data.subscribe(DS, render); } catch (e) {}
+
+    // 监听 worker 的 stdout 行（process:output 事件）与退出（process:exit）。
+    if (platform.process && platform.process.onOutput) {
+      platform.process.onOutput(handleWorkerLine);
+    }
+    if (platform.process && platform.process.onExit) {
+      platform.process.onExit(function (payload) {
+        setPill('st-off', '已退出');
+        $('hero-title').textContent = '后台监控进程已退出';
+        $('hero-sub').textContent = '可点击「立即签到」走数据源兜底，或重开页面重启 worker';
+      });
+    }
+
+    startWorker();
 
     $('btn-checkin').addEventListener('click', function () {
       $('btn-checkin').disabled = true;
-      platform.data.refresh(DS).then(function (d) {
-        render({ data: d });
-        $('btn-checkin').disabled = false;
+      // 优先通知 worker 立即检查；无 worker 时回退数据源 refresh。
+      var viaWorker = platform.process && platform.process.write
+        ? platform.process.write('autosign-worker', 'checkin\n')
+            .then(function () { return null; })
+            .catch(function () { return platform.data.refresh(DS); })
+        : platform.data.refresh(DS);
+      viaWorker.then(function (d) {
+        if (d) render({ data: d });
+        setTimeout(function () { $('btn-checkin').disabled = false; }, 600);
       }).catch(function (e) {
         $('btn-checkin').disabled = false;
         showLoadError(e);
@@ -369,11 +432,14 @@ select:focus { outline: 2px solid var(--evg-accent-border, var(--accent)); }
       btn.disabled = true;
       platform.settings.get('AUTOSIGN_ENABLED').then(function (cur) {
         var next = String(cur).trim().toLowerCase() === 'true' ? 'false' : 'true';
-        return platform.settings.set('AUTOSIGN_ENABLED', next).then(function () {
-          return platform.data.refresh(DS);
-        });
+        return platform.settings.set('AUTOSIGN_ENABLED', next);
+      }).then(function () {
+        // 切开关后让 worker 立即读新配置并回报状态
+        return platform.process && platform.process.write
+          ? platform.process.write('autosign-worker', 'status\n').catch(function () {})
+          : platform.data.refresh(DS);
       }).then(function (d) {
-        render({ data: d });
+        if (d && typeof d === 'object' && !d.ok) render({ data: d });
         btn.disabled = false;
       }).catch(function (e) {
         btn.disabled = false;
@@ -384,7 +450,9 @@ select:focus { outline: 2px solid var(--evg-accent-border, var(--accent)); }
     $('loc-select').addEventListener('change', function () {
       var sel = this;
       platform.settings.set('AUTOSIGN_RADAR_LOCATION', sel.value).then(function () {
-        platform.data.refresh(DS).then(function (d) { render({ data: d }); });
+        if (platform.process && platform.process.write) {
+          platform.process.write('autosign-worker', 'status\n').catch(function () {});
+        }
       }).catch(function (e) { showLoadError(e); });
     });
   }
