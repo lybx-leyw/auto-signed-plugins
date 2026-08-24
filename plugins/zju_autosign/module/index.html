@@ -117,6 +117,39 @@ body {
 .btn:hover { transform: translateY(-0.08rem); }
 .btn:active { transform: translateY(0); }
 .btn:disabled { opacity: 0.55; cursor: default; transform: none; }
+.btn-primary {
+  font-size: var(--fs-md);
+  padding: 0.75rem 1.6rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+/* 签到结果横幅：大号、醒目，一眼可见签到成败 */
+.result-banner {
+  display: flex; align-items: center; gap: 0.7rem;
+  margin-top: 0.9rem;
+  padding: 0.85rem 1.1rem;
+  border-radius: 0.7rem;
+  font-size: var(--fs-md); font-weight: 700;
+  border: 1px solid transparent;
+  animation: bannerIn 0.25s ease both;
+}
+.result-banner .rb-icon { font-size: 1.4rem; line-height: 1; }
+.result-banner.ok {
+  color: var(--ok); background: color-mix(in srgb, var(--ok) 13%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+}
+.result-banner.fail {
+  color: var(--error); background: color-mix(in srgb, var(--error) 12%, transparent);
+  border-color: color-mix(in srgb, var(--error) 40%, transparent);
+}
+.result-banner.info {
+  color: var(--ink-soft); background: color-mix(in srgb, var(--ink-faint) 10%, transparent);
+  border-color: var(--line);
+}
+@keyframes bannerIn {
+  from { opacity: 0; transform: translateY(-0.3rem); }
+  to { opacity: 1; transform: translateY(0); }
+}
 .btn.ghost {
   background: color-mix(in srgb, var(--evg-surface) 85%, transparent);
   border: 1px solid var(--line);
@@ -190,10 +223,12 @@ select:focus { outline: 2px solid var(--evg-accent-border, var(--accent)); }
       <div class="hero-sub" id="hero-sub">首次加载需要几秒钟</div>
     </div>
     <div class="controls">
-      <button type="button" class="btn" id="btn-checkin" disabled>⚡ 立即签到</button>
+      <button type="button" class="btn btn-primary" id="btn-checkin" disabled>⚡ 立即签到</button>
       <button type="button" class="btn ghost" id="btn-toggle" disabled>暂停监控</button>
     </div>
     <div class="error-box" id="error-box"></div>
+    <!-- 签到结果横幅：大号、一眼可见 -->
+    <div class="result-banner" id="result-banner" hidden></div>
   </section>
 
   <section class="card">
@@ -252,24 +287,28 @@ select:focus { outline: 2px solid var(--evg-accent-border, var(--accent)); }
     var d = (payload && payload.data) ? payload.data : payload;
     if (!d || typeof d !== 'object') return;
 
-    // 状态
+    // 状态判定（优先级：error > paused > running > worker 已连接 > 未运行）
     if (d.error) {
       setPill('st-error', '异常');
       $('hero-title').textContent = '监控遇到问题';
       $('hero-sub').textContent = '请检查下方错误信息与设置';
       $('error-box').style.display = 'block';
       $('error-box').textContent = d.error;
-    } else if (d.running === true) {
-      setPill('st-running', '运行中');
-      $('hero-title').textContent = '监控运行中，发现点名将自动应答';
-      $('hero-sub').textContent = d.enabled === false
-        ? '注意：当前「自动签到开关」已关闭，仅检查不应答'
-        : '最近检查 ' + (d.checkedAt || d.lastPoll || '—');
-      $('error-box').style.display = 'none';
-    } else if (d.enabled === false) {
+    } else if (d.enabled === false && d.worker === true) {
       setPill('st-paused', '已暂停');
       $('hero-title').textContent = '自动签到已暂停';
       $('hero-sub').textContent = '点击「恢复监控」继续自动应答点名';
+      $('error-box').style.display = 'none';
+    } else if (d.running === true) {
+      setPill('st-running', '运行中');
+      $('hero-title').textContent = '监控运行中，发现点名将自动应答';
+      $('hero-sub').textContent = '最近检查 ' + (d.checkedAt || d.lastPoll || '—');
+      $('error-box').style.display = 'none';
+    } else if (d.worker === true) {
+      // worker 进程已连接，但监控循环尚未就绪（登录中 / 首轮未完成）
+      setPill('st-running', '已连接');
+      $('hero-title').textContent = '后台监控已连接，正在初始化';
+      $('hero-sub').textContent = '正在登录并开始第一轮检查…';
       $('error-box').style.display = 'none';
     } else {
       setPill('st-off', '未运行');
@@ -347,6 +386,14 @@ select:focus { outline: 2px solid var(--evg-accent-border, var(--accent)); }
       '4. 打开本页即自动拉起后台监控进程（worker 常驻 stdio 后端）；状态实时推送到页面，「立即签到」可随时触发一轮即时检查。';
   }
 
+  function showBanner(kind, icon, text) {
+    var b = $('result-banner');
+    if (!b) return;
+    b.hidden = false;
+    b.className = 'result-banner ' + kind;
+    b.innerHTML = '<span class="rb-icon">' + icon + '</span><span>' + esc(text) + '</span>';
+  }
+
   function handleWorkerLine(payload) {
     // process:output 事件：每行是一条 JSON（state/event/notice）。
     if (!payload || !payload.line) return;
@@ -358,11 +405,21 @@ select:focus { outline: 2px solid var(--evg-accent-border, var(--accent)); }
     if (msg.type === 'state') {
       render({ data: msg.data });
     } else if (msg.type === 'event') {
-      // 签到事件：追加到历史，并刷新状态
-      render({ data: msg.data });
+      // 签到事件：醒目标注结果，并刷新状态
+      var ev = msg.data || {};
+      var ok = ev.ok === true;
+      var label = (ev.type === 'radar' ? '雷达点名' : ev.type === 'number' ? '数字点名' : '点名') +
+        ' #' + (ev.rid != null ? ev.rid : '?') + '《' + (ev.course || '') + '》' + (ev.title || '');
+      if (ok) {
+        showBanner('ok', '✅', '签到成功：' + label);
+      } else {
+        showBanner('fail', '❌', '签到失败：' + label + (ev.detail ? '（' + ev.detail + '）' : ''));
+      }
+      render({ data: ev });
       platform.process.write(WORKER, 'status\n').catch(function () {});
     } else if (msg.type === 'notice') {
-      $('hero-sub').textContent = String(msg.data || '');
+      // 提示类信息：显示在横幅，不覆盖状态栏
+      showBanner('info', 'ℹ️', String(msg.data || ''));
     }
   }
 
@@ -402,14 +459,31 @@ select:focus { outline: 2px solid var(--evg-accent-border, var(--accent)); }
 
     $('btn-checkin').addEventListener('click', function () {
       $('btn-checkin').disabled = true;
+      $('btn-checkin').textContent = '⏳ 签到中…';
+      showBanner('info', '⏳', '正在执行一轮签到检查…');
       // 通知 worker 立即执行一轮检查（worker 经 process:output 回报结果）。
       platform.process.write(WORKER, 'checkin\n')
         .then(function () {
-          setTimeout(function () { $('btn-checkin').disabled = false; }, 600);
+          setTimeout(function () {
+            $('btn-checkin').disabled = false;
+            $('btn-checkin').textContent = '⚡ 立即签到';
+          }, 800);
         })
         .catch(function (e) {
-          $('btn-checkin').disabled = false;
-          showWorkerError(e);
+          // worker 未运行：先拉起 worker 再签到
+          platform.process.start(WORKER, {}).then(function () {
+            setPill('st-running', '运行中');
+            return platform.process.write(WORKER, 'checkin\n');
+          }).then(function () {
+            setTimeout(function () {
+              $('btn-checkin').disabled = false;
+              $('btn-checkin').textContent = '⚡ 立即签到';
+            }, 800);
+          }).catch(function (e2) {
+            $('btn-checkin').disabled = false;
+            $('btn-checkin').textContent = '⚡ 立即签到';
+            showWorkerError(e2);
+          });
         });
     });
 
