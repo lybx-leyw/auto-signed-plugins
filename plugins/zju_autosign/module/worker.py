@@ -29,6 +29,11 @@ import threading
 import time
 import traceback
 
+# 显式把脚本所在目录加入 sys.path：嵌入式 Python（.greenix/python/python.exe）
+# 以绝对路径启动脚本时，sys.path[0] 不一定是脚本目录，导致 import autosign_core
+# 失败（ModuleNotFoundError）。这里不依赖 sys.path[0] 的隐式行为。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import autosign_core as core
 
 # ═══════════ 共享状态 ═══════════
